@@ -2,6 +2,8 @@ import gradio as gr
 import json
 import csv
 import os
+import time
+import gzip
 import pandas as pd
 from honeypot_detector import is_honeypot
 
@@ -15,6 +17,9 @@ JD_KEYWORDS = {
     "vector database", "retrieval", "weaviate", "pinecone", "chroma"
 }
 
+# ─────────────────────────────────────────────────────────────
+# Scoring and reasoning
+# ─────────────────────────────────────────────────────────────
 def extract_features(candidate):
     profile  = candidate.get("profile", {})
     signals  = candidate.get("redrob_signals", {})
@@ -33,9 +38,13 @@ def extract_features(candidate):
     }
 
 def score_candidate(candidate, f):
-    years = f["years"]
+    years         = f["years"]
     exp_score     = 1.0 if 5 <= years <= 9 else max(0.0, 1.0 - abs(years - 7) / 7.0)
-    combined      = " ".join([s.get("name","").lower() for s in f["skills"]]) + " " + f["profile"].get("current_title","").lower() + " " + f["profile"].get("summary","").lower()
+    combined      = (
+        " ".join([s.get("name","").lower() for s in f["skills"]]) + " " +
+        f["profile"].get("current_title","").lower() + " " +
+        f["profile"].get("summary","").lower()
+    )
     keyword_score = min(1.0, sum(1 for kw in JD_KEYWORDS if kw in combined) / 8.0)
     skill_quality = min(1.0, (sum(s.get("duration_months",0) for s in f["skills"]) / len(f["skills"]) / 24.0)) if f["skills"] else 0.0
     github_score  = (f["github"] / 100.0) if f["github"] >= 0 else 0.0
@@ -46,26 +55,29 @@ def score_candidate(candidate, f):
         f["interview_rate"] * 0.05 + avail_bonus, 1.0), 4)
 
 def build_reasoning(candidate, f):
-    p = f["profile"]; s = f["signals"]; skills = f["skills"]
+    p     = f["profile"]
+    sig   = f["signals"]
+    skills= f["skills"]
     edu   = candidate.get("education", [])
     certs = candidate.get("certifications", [])
     career= candidate.get("career_history", [])
     top5  = sorted(skills, key=lambda x: x.get("endorsements", 0), reverse=True)[:5]
     skill_str = ", ".join([f"{s['name']} ({s.get('proficiency','?')})" for s in top5]) or "none listed"
-    edu_str   = f"{edu[0].get('degree','')} in {edu[0].get('field_of_study','')} from {edu[0].get('institution','')} [{edu[0].get('tier','unknown')} institution]. " if edu else ""
+    edu_str   = (f"{edu[0].get('degree','')} in {edu[0].get('field_of_study','')} from "
+                 f"{edu[0].get('institution','')} [{edu[0].get('tier','unknown')} institution]. ") if edu else ""
     prev      = list({r.get("title","") for r in career if not r.get("is_current",False)})[:2]
     prev_str  = f"Previously: {', '.join(prev)}. " if prev else ""
     cert_str  = f"Certifications: {', '.join([c.get('name','') for c in certs[:2]])}. " if certs else ""
-    salary    = s.get("expected_salary_range_inr_lpa", {})
-    avail     = []
-    if f["open_to_work"]: avail.append("open to work")
-    notice = s.get("notice_period_days")
-    if notice is not None: avail.append(f"notice {notice}d")
-    if s.get("willing_to_relocate"): avail.append("willing to relocate")
-    avail.append(f"{s.get('preferred_work_mode','?')} preferred")
+    salary    = sig.get("expected_salary_range_inr_lpa", {})
+    avail = []
+    if f["open_to_work"]:                     avail.append("open to work")
+    notice = sig.get("notice_period_days")
+    if notice is not None:                     avail.append(f"notice {notice}d")
+    if sig.get("willing_to_relocate"):         avail.append("willing to relocate")
+    avail.append(f"{sig.get('preferred_work_mode','?')} preferred")
     if salary.get("min") and salary.get("max"): avail.append(f"salary {salary['min']}–{salary['max']} LPA")
     beh = f"Response rate {f['response_rate']*100:.0f}%"
-    if f["github"] >= 0: beh += f"; GitHub {f['github']:.0f}/100"
+    if f["github"] >= 0:       beh += f"; GitHub {f['github']:.0f}/100"
     if f["interview_rate"] >= 0: beh += f"; interview completion {f['interview_rate']*100:.0f}%"
     return (
         f"{p.get('current_title','?')} at {p.get('current_company','')} ({p.get('current_industry','')}) "
@@ -75,22 +87,59 @@ def build_reasoning(candidate, f):
         f"Signals — {beh}. {'; '.join(avail).capitalize()}."
     ).strip()
 
-def run_pipeline(candidates):
-    if not candidates:
-        return None, pd.DataFrame(), "No candidates loaded."
-    scored = []
+# ─────────────────────────────────────────────────────────────
+# Streaming pipeline — reads JSONL line-by-line (memory safe)
+# ─────────────────────────────────────────────────────────────
+def stream_candidates(filepath, max_candidates):
+    """Yields parsed candidate dicts one at a time from JSON array or JSONL."""
+    open_fn = gzip.open if filepath.endswith(".gz") else open
+    count = 0
+    with open_fn(filepath, "rt", encoding="utf-8") as f:
+        first = f.read(1)
+        f.seek(0)
+        if first == "[":
+            # JSON array — load full (only feasible for small files)
+            data = json.load(f)
+            for cand in data:
+                if count >= max_candidates:
+                    break
+                yield cand
+                count += 1
+        else:
+            # JSONL — stream line by line (memory safe for 450MB+ files)
+            for line in f:
+                if count >= max_candidates:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                    count += 1
+                except json.JSONDecodeError:
+                    continue
+
+def run_pipeline(filepath, max_candidates):
+    t0 = time.time()
+    scored    = []
     honeypots = 0
-    for cand in candidates:
+    total     = 0
+
+    for cand in stream_candidates(filepath, max_candidates):
+        total += 1
         if is_honeypot(cand):
             honeypots += 1
             continue
         feats = extract_features(cand)
         score = score_candidate(cand, feats)
         scored.append((cand, feats, score))
+
     if not scored:
-        return None, pd.DataFrame(), "All candidates flagged as honeypots."
+        return None, pd.DataFrame(), "All candidates were flagged as honeypots or file was empty."
+
     scored.sort(key=lambda x: x[2], reverse=True)
     top_100 = scored[:100]
+
     out_path = "/tmp/submission.csv"
     rows = []
     with open(out_path, "w", newline="", encoding="utf-8") as f:
@@ -101,32 +150,28 @@ def run_pipeline(candidates):
             cid = cand["candidate_id"]
             writer.writerow([cid, rank, score, reasoning])
             rows.append({"candidate_id": cid, "rank": rank, "score": score, "reasoning": reasoning[:100] + "..."})
+
+    elapsed = time.time() - t0
     status = (
-        f"Processed {len(candidates)} candidates — "
-        f"{honeypots} honeypots removed, "
-        f"{len(scored)} valid candidates ranked. "
-        f"Top {min(100, len(top_100))} written to CSV."
+        f"Scanned {total} candidates in {elapsed:.2f}s. "
+        f"Removed {honeypots} honeypots. "
+        f"Ranked {len(scored)} valid candidates. "
+        f"Top {len(top_100)} saved to CSV."
     )
     return out_path, pd.DataFrame(rows[:10]), status
 
-def run_preloaded():
+# ─────────────────────────────────────────────────────────────
+# Gradio handlers
+# ─────────────────────────────────────────────────────────────
+def run_preloaded(max_cands):
     if not os.path.exists(PRELOADED_SAMPLE):
         return None, pd.DataFrame(), f"Pre-loaded sample not found at {PRELOADED_SAMPLE}"
-    with open(PRELOADED_SAMPLE, "r", encoding="utf-8") as f:
-        raw = f.read().strip()
-    candidates = json.loads(raw) if raw.startswith('[') else [json.loads(l) for l in raw.splitlines() if l.strip()]
-    return run_pipeline(candidates)
+    return run_pipeline(PRELOADED_SAMPLE, int(max_cands))
 
-def run_uploaded(uploaded_file):
+def run_uploaded(uploaded_file, max_cands):
     if uploaded_file is None:
-        return None, pd.DataFrame(), "No file uploaded. Use the pre-loaded sample or upload a small JSON/JSONL file."
-    with open(uploaded_file, "r", encoding="utf-8") as f:
-        raw = f.read().strip()
-    try:
-        candidates = json.loads(raw) if raw.startswith('[') else [json.loads(l) for l in raw.splitlines() if l.strip()]
-    except Exception as e:
-        return None, pd.DataFrame(), f"Parse error: {e}"
-    return run_pipeline(candidates)
+        return None, pd.DataFrame(), "No file uploaded."
+    return run_pipeline(uploaded_file, int(max_cands))
 
 # ─────────────────────────────────────────────────────────────
 # Gradio UI
@@ -135,24 +180,30 @@ with gr.Blocks(title="Redrob Ranker — Bitwise Developers", theme=gr.themes.Sof
     gr.Markdown("# Redrob Candidate Ranking System")
     gr.Markdown("**Team: Bitwise Developers** | India Runs Data and AI Challenge")
     gr.Markdown(
-        "### Pipeline\n"
+        "**Pipeline stages:**\n"
         "1. Honeypot detection and removal\n"
-        "2. Feature extraction (experience, skills, behavioral signals)\n"
-        "3. Multi-signal heuristic scoring (keyword match, GitHub, response rate, availability)\n"
-        "4. Top 100 selection with detailed reasoning"
+        "2. Feature extraction from profile, skills, career, education, and behavioral signals\n"
+        "3. Multi-signal heuristic scoring (JD keyword match, experience fit, GitHub, response rate, skill quality, availability)\n"
+        "4. Top 100 selection with full per-candidate reasoning"
     )
 
     gr.Markdown("---")
-    gr.Markdown("### Option 1 — Use Pre-loaded Sample (instant, recommended for demo)")
+
+    max_slider = gr.Slider(
+        minimum=100, maximum=60000, value=500, step=100,
+        label="Max candidates to process (use higher values for full dataset runs)"
+    )
+
+    gr.Markdown("### Option 1 — Pre-loaded Sample (instant demo)")
     sample_btn = gr.Button("Run on Pre-loaded Sample Candidates", variant="primary")
 
-    gr.Markdown("---")
+    gr.Markdown("### Option 2 — Upload Any Candidate File")
     gr.Markdown(
-        "### Option 2 — Upload Your Own File\n"
-        "Upload a small JSON array or JSONL file (recommended: under 5MB / ~500 candidates). "
-        "Do NOT upload the full 100K dataset here — run that locally using `rank.py`."
+        "Supports `.json` (array), `.jsonl`, and `.jsonl.gz`. "
+        "Large files (e.g. full 100K dataset) are streamed **line-by-line** — "
+        "no memory overflow. Adjust the slider above to control how many candidates are processed."
     )
-    file_input  = gr.File(label="Upload Candidate File (.json or .jsonl)", file_types=[".json", ".jsonl"])
+    file_input  = gr.File(label="Upload Candidate File", file_types=[".json", ".jsonl", ".gz"])
     upload_btn  = gr.Button("Run on Uploaded File", variant="secondary")
 
     gr.Markdown("---")
@@ -160,8 +211,8 @@ with gr.Blocks(title="Redrob Ranker — Bitwise Developers", theme=gr.themes.Sof
     file_output = gr.File(label="Download submission.csv")
     df_output   = gr.Dataframe(label="Top 10 Candidates Preview")
 
-    sample_btn.click(fn=run_preloaded, inputs=[], outputs=[file_output, df_output, status_box])
-    upload_btn.click(fn=run_uploaded, inputs=[file_input], outputs=[file_output, df_output, status_box])
+    sample_btn.click(fn=run_preloaded, inputs=[max_slider], outputs=[file_output, df_output, status_box])
+    upload_btn.click(fn=run_uploaded,  inputs=[file_input, max_slider], outputs=[file_output, df_output, status_box])
 
 if __name__ == "__main__":
     demo.launch()
