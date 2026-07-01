@@ -1,96 +1,70 @@
-# Redrob Hackathon — Submission Metadata Template
-#
-# Copy this file to your repo root as `submission_metadata.yaml` and fill it in.
-# The fields here should match what you submit via the portal at upload time.
-# Stage 3 review uses this file to verify your portal metadata.
-
-# ============================================================================
-# Team identity
-# ============================================================================
-team_name: "Bitwise Developers"  # Used in leaderboard and announcements
+team_name: "Bitwise Developers"
 
 primary_contact:
   name: "Koustubh Verma"
-  email: "2330444@kiit.ac.in"   # Used for all organizer communication
-  phone: "+91 7878922702"        # Used for top-50 / top-10 outreach
+  email: "2330444@kiit.ac.in"
+  phone: "+91-7878922702"
 
 team_members:
   - name: "Koustubh Verma"
     email: "2330444@kiit.ac.in"
-    role: "Backend Engineer"          # Optional, e.g. "Team Lead", "Backend", "Data"
+    role: "Team Lead, Backend Engineer"
   - name: "Gyan Prakash"
     email: "gyan.official.work0902@gmail.com"
     role: "ML Engineer"
-  # Add more members as needed; solo participants list just one member
 
-# ============================================================================
-# Code and reproducibility
-# ============================================================================
 github_repo: "https://github.com/Gyanprakash136/LLM-bitwise-operator"
-# Required. Must be reachable. Private repos OK if you can grant organizer
-# access at Stage 3 (the email to add will be communicated then).
 
 sandbox_link: "https://huggingface.co/spaces/gyan0009/redrob-ranker-bitwise-operator"
-# Required. A working hosted environment where the ranker can be run on a small
-# candidate sample. See Section 10.5 of submission_spec.md for acceptable
-# platforms (HuggingFace Spaces, Streamlit Cloud, Replit, Colab, Docker, Binder).
 
-reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submission.csv"
-# The single command that produces submission.csv from candidates.jsonl.
-# Should run end-to-end within 5 minutes on CPU with 16GB RAM and no network.
+reproduce_command: "python rank.py --candidates India_runs_data_and_ai_challenge/candidates.jsonl --out India_runs_data_and_ai_challenge/team_bitwise_developers.csv"
 
-# ============================================================================
-# Compute environment
-# ============================================================================
 compute:
-  platform: "MacBook Pro M2"                    # Or: "AWS EC2 c5.4xlarge", "Local Linux box", etc.
-  cpu_cores: 8                                  # Number of CPU cores used
-  ram_gb: 16                                    # Available RAM in GB
-  python_version: "3.11.4"                      # python --version
-  os: "macOS Thaoe 26.5.1"                              # Or "Ubuntu 22.04 LTS", etc.
-  uses_gpu_for_inference: false                 # Must be false — see compute constraints
-  has_network_during_ranking: false             # Must be false — no API calls during ranking
-  pre_computation_required: true               # true if you pre-compute embeddings or train models offline
-  pre_computation_time_minutes: 20               # Approximate, if applicable
+  platform: "MacBook Pro M2"
+  cpu_cores: 8
+  ram_gb: 16
+  python_version: "3.11.4"
+  os: "macOS 15.0 Sequoia"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: true
+  pre_computation_time_minutes: 20
 
-# ============================================================================
-# AI tools declaration
-# ============================================================================
-# Transparency only — declared use is NOT penalized. Be honest. Stage 5 interview
-# may verify these declarations against your code; declarations that contradict
-# your code or your interview are flagged.
 ai_tools_used:
-  - "Claude"        # e.g. for architecture discussion, code review
-  - "GitHub Copilot"  # e.g. for autocomplete
-  # Other options: "ChatGPT", "Cursor", "Gemini", "Codeium", "Other", "None"
+  - "Gemini"
+  - "Claude"
 
 ai_usage_summary: |
-  Briefly describe how AI tools were used. Examples:
-  - "Used Claude for code review and architectural discussion. Used Copilot for autocomplete.
-     No candidate data was fed to any LLM."
-  - "Used ChatGPT to debug Python issues and Cursor for refactoring."
-  - "No AI tools used."
+  Gemini and Claude were used for architectural planning, fine-tuning strategy design,
+  and code review. All training and inference runs locally. No candidate data was
+  transmitted to any external model or API at any point during ranking.
 
-# ============================================================================
-# Approach summary (optional but recommended)
-# ============================================================================
 methodology_summary: |
-  ≤200 word summary of your approach. Strongly recommended.
+  Our solution is a three-stage hybrid ranking pipeline combining semantic retrieval,
+  heuristic scoring, and local LLM re-ranking.
 
-  Example:
-  "Rule-based ranker with explicit reasoning capture. Five scoring components
-  (skills, title+career, experience years, location, education) combined with
-  a multiplicative behavioral-signal modifier. The title component is the
-  decisive signal against keyword-stuffer traps; an endorsement-and-duration
-  trust multiplier on skills catches lazy keyword stuffing. Runtime is ~10
-  seconds for 50K candidates on CPU."
+  Stage 1 - Semantic Retrieval: Candidate profiles are encoded offline using
+  BAAI/bge-small-en-v1.5 and stored in a FAISS IndexFlatIP. At ranking time, the
+  parsed job description is embedded and used to retrieve the top 2,000 candidates
+  by cosine similarity.
 
-# ============================================================================
-# Declarations
-# ============================================================================
+  Stage 2 - Heuristic Pre-scoring: The retrieved pool is narrowed using hard filters
+  (experience bounds) followed by an ensemble heuristic that weights semantic
+  similarity, recruiter response rate, GitHub activity score, and a skill quality
+  ratio (endorsement duration per skill, penalizing keyword stuffers).
+
+  Stage 3 - LLM Re-ranking: The top 200 candidates from Stage 2 are evaluated
+  by a QLoRA fine-tuned Qwen2.5-3B-Instruct model, quantized to Q4_K_M and served
+  locally via llama.cpp. The model produces a fit score and structured reasoning
+  string per candidate. Final scores are an ensemble of the LLM output and the
+  heuristic score.
+
+  Honeypot defense is applied as a pre-filter before any ML processing. Total
+  end-to-end ranking runtime is under 5 minutes on CPU with 16GB RAM.
+
 declarations:
-  read_submission_spec: true        # I have read submission_spec.md in full
-  code_is_original_work: true       # My code is my team's original work (using AI as a tool is fine)
-  no_collusion: true                # I have not coordinated my submission with other teams
-  honeypot_check_done: true        # OPTIONAL — set true if you explicitly checked for honeypots in your ranking
-  reproduction_tested: true         # I have tested that my reproduce_command runs end-to-end
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true
