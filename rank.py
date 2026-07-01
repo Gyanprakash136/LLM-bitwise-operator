@@ -109,12 +109,85 @@ def main(candidates_path, output_csv, artifacts_dir="India_runs_data_and_ai_chal
         
         title = profile.get("current_title", "Unknown")
         years = profile.get("years_of_experience", 0)
+        company = profile.get("current_company", "an unnamed company")
+        company_size = profile.get("current_company_size", "unknown size")
+        industry = profile.get("current_industry", "")
+        location = profile.get("location", "")
         skills_list = c_detail.get("skills", [])
-        skills = " ".join([s["name"] for s in skills_list[:5]])
         signals = c_detail.get("redrob_signals", {})
         response_rate = signals.get("recruiter_response_rate", 0.0)
-        
-        fallback_reasoning = f"{title} with {years} yrs; {len(skills_list)} AI core skills; response rate {response_rate:.2f}."
+        github_score = signals.get("github_activity_score", -1)
+        interview_rate = signals.get("interview_completion_rate", -1)
+        offer_rate = signals.get("offer_acceptance_rate", -1)
+        notice_period = signals.get("notice_period_days", None)
+        open_to_work = signals.get("open_to_work_flag", False)
+        willing_to_relocate = signals.get("willing_to_relocate", False)
+        profile_completeness = signals.get("profile_completeness_score", 0)
+        saved_by = signals.get("saved_by_recruiters_30d", 0)
+        work_mode = signals.get("preferred_work_mode", "unspecified")
+        salary = signals.get("expected_salary_range_inr_lpa", {})
+        sal_min = salary.get("min", None)
+        sal_max = salary.get("max", None)
+
+        # Top skills with proficiency
+        top_skills = sorted(skills_list, key=lambda x: x.get("endorsements", 0), reverse=True)[:5]
+        skill_str = ", ".join([f"{s['name']} ({s.get('proficiency','?')})" for s in top_skills]) if top_skills else "none listed"
+
+        # Education
+        edu_list = c_detail.get("education", [])
+        edu_str = ""
+        if edu_list:
+            e = edu_list[0]
+            edu_str = f"{e.get('degree','')} in {e.get('field_of_study','')} from {e.get('institution','')} [{e.get('tier','unknown')} institution]."
+
+        # Career
+        career = c_detail.get("career_history", [])
+        prev_titles = list({r.get("title","") for r in career if not r.get("is_current", False)})[:2]
+        prev_str = f"Previously held roles as {', '.join(prev_titles)}." if prev_titles else ""
+
+        # Certifications
+        certs = c_detail.get("certifications", [])
+        cert_str = ""
+        if certs:
+            cert_names = [c.get("name","") for c in certs[:2]]
+            cert_str = f"Holds certifications: {', '.join(cert_names)}."
+
+        # Behavioral signal string
+        behavioral_parts = []
+        behavioral_parts.append(f"Recruiter response rate: {response_rate * 100:.0f}%")
+        if github_score >= 0:
+            behavioral_parts.append(f"GitHub activity score: {github_score:.0f}/100")
+        if interview_rate >= 0:
+            behavioral_parts.append(f"interview completion rate: {interview_rate * 100:.0f}%")
+        if offer_rate >= 0:
+            behavioral_parts.append(f"offer acceptance rate: {offer_rate * 100:.0f}%")
+        behavioral_str = "; ".join(behavioral_parts) + "."
+
+        # Availability
+        avail_parts = []
+        if open_to_work:
+            avail_parts.append("actively open to work")
+        if notice_period is not None:
+            avail_parts.append(f"notice period {notice_period} days")
+        if willing_to_relocate:
+            avail_parts.append("willing to relocate")
+        avail_parts.append(f"prefers {work_mode} work")
+        if sal_min and sal_max:
+            avail_parts.append(f"expected salary {sal_min}-{sal_max} LPA")
+        avail_str = "; ".join(avail_parts).capitalize() + "." if avail_parts else ""
+
+        skills = " ".join([s["name"] for s in top_skills])
+        fallback_reasoning = (
+            f"{title} at {company} ({company_size} employees, {industry} industry) based in {location} "
+            f"with {years} years of experience. "
+            f"Top skills: {skill_str}. "
+            f"{edu_str} "
+            f"{prev_str} "
+            f"{cert_str} "
+            f"Profile completeness: {profile_completeness:.0f}%; saved by {saved_by} recruiters in last 30 days. "
+            f"Behavioral signals — {behavioral_str} "
+            f"{avail_str}"
+        ).strip()
 
         if llm:
             # Construct prompt for LLM
@@ -123,22 +196,20 @@ def main(candidates_path, output_csv, artifacts_dir="India_runs_data_and_ai_chal
                 "JD: Senior ML Engineer with production embedding experience.\n"
                 f"Candidate: {profile.get('anonymized_name', '')}, {title}, {years} yrs, Skills: [{skills}], Response Rate: {response_rate * 100:.1f}%\nOutput:\n"
             )
-            
+
             output = llm(prompt, max_tokens=60, stop=["\\n", "</s>"])
             text = output["choices"][0]["text"].strip()
-            
+
             # Parse output: "85 | reasoning..."
             try:
                 parts = text.split("|", 1)
                 llm_score = float(parts[0].strip())
                 reasoning = parts[1].strip() if len(parts) > 1 else fallback_reasoning
             except Exception:
-                # Parsing failed, fallback
-                llm_score = h_score * 100 # scale h_score to 0-100 roughly
+                llm_score = h_score * 100
                 reasoning = fallback_reasoning
         else:
-            # Fallback if no LLM
-            llm_score = h_score * 100 # assuming h_score is ~0.0-1.0
+            llm_score = h_score * 100
             reasoning = fallback_reasoning
             
         f_score = ensemble_score(llm_score, h_score * 100)
