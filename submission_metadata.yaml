@@ -20,11 +20,11 @@ sandbox_link: "https://huggingface.co/spaces/gyan0009/redrob-ranker-bitwise-oper
 reproduce_command: "python rank.py --candidates India_runs_data_and_ai_challenge/candidates.jsonl --out India_runs_data_and_ai_challenge/team_bitwise_developers.csv"
 
 compute:
-  platform: "MacBook Pro M2"
-  cpu_cores: 8
+  platform: "MacBook air m4"
+  cpu_cores: 10
   ram_gb: 16
   python_version: "3.11.4"
-  os: "macOS 15.0 Sequoia"
+  os: "macOS Thaoe 26.5.1"
   uses_gpu_for_inference: false
   has_network_during_ranking: false
   pre_computation_required: true
