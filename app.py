@@ -5,7 +5,8 @@ import os
 import pandas as pd
 from honeypot_detector import is_honeypot
 
-# JD key signals for keyword matching against Senior ML Engineer JD
+PRELOADED_SAMPLE = "India_runs_data_and_ai_challenge/sample_candidates.json"
+
 JD_KEYWORDS = {
     "python", "faiss", "embeddings", "llm", "vector", "machine learning",
     "deep learning", "nlp", "transformers", "rag", "production", "ml engineer",
@@ -14,166 +15,69 @@ JD_KEYWORDS = {
     "vector database", "retrieval", "weaviate", "pinecone", "chroma"
 }
 
-# ─────────────────────────────────────────────────────────────
-# Stage 1: Feature extraction
-# ─────────────────────────────────────────────────────────────
 def extract_features(candidate):
     profile  = candidate.get("profile", {})
     signals  = candidate.get("redrob_signals", {})
     skills   = candidate.get("skills", [])
-    career   = candidate.get("career_history", [])
-
-    years              = profile.get("years_of_experience", 0)
-    response_rate      = signals.get("recruiter_response_rate", 0.0)
-    github             = signals.get("github_activity_score", -1)
-    interview_rate     = signals.get("interview_completion_rate", 0.0)
-    offer_rate         = signals.get("offer_acceptance_rate", -1)
-    open_to_work       = signals.get("open_to_work_flag", False)
-    profile_complete   = signals.get("profile_completeness_score", 0) / 100.0
-    saved_by           = signals.get("saved_by_recruiters_30d", 0)
-
     return {
-        "years": years,
-        "response_rate": response_rate,
-        "github": github,
-        "interview_rate": interview_rate,
-        "offer_rate": offer_rate,
-        "open_to_work": open_to_work,
-        "profile_complete": profile_complete,
-        "saved_by": saved_by,
-        "skills": skills,
-        "profile": profile,
-        "signals": signals,
+        "years":            profile.get("years_of_experience", 0),
+        "response_rate":    signals.get("recruiter_response_rate", 0.0),
+        "github":           signals.get("github_activity_score", -1),
+        "interview_rate":   signals.get("interview_completion_rate", 0.0),
+        "open_to_work":     signals.get("open_to_work_flag", False),
+        "profile_complete": signals.get("profile_completeness_score", 0) / 100.0,
+        "saved_by":         signals.get("saved_by_recruiters_30d", 0),
+        "skills":           skills,
+        "profile":          profile,
+        "signals":          signals,
     }
 
-# ─────────────────────────────────────────────────────────────
-# Stage 2: Heuristic scoring
-# ─────────────────────────────────────────────────────────────
-def score_candidate(candidate, features):
-    profile = features["profile"]
-    years   = features["years"]
+def score_candidate(candidate, f):
+    years = f["years"]
+    exp_score     = 1.0 if 5 <= years <= 9 else max(0.0, 1.0 - abs(years - 7) / 7.0)
+    combined      = " ".join([s.get("name","").lower() for s in f["skills"]]) + " " + f["profile"].get("current_title","").lower() + " " + f["profile"].get("summary","").lower()
+    keyword_score = min(1.0, sum(1 for kw in JD_KEYWORDS if kw in combined) / 8.0)
+    skill_quality = min(1.0, (sum(s.get("duration_months",0) for s in f["skills"]) / len(f["skills"]) / 24.0)) if f["skills"] else 0.0
+    github_score  = (f["github"] / 100.0) if f["github"] >= 0 else 0.0
+    avail_bonus   = 0.05 if f["open_to_work"] else 0.0
+    return round(min(
+        keyword_score * 0.35 + exp_score * 0.20 + f["response_rate"] * 0.15 +
+        github_score * 0.10 + skill_quality * 0.10 + f["profile_complete"] * 0.05 +
+        f["interview_rate"] * 0.05 + avail_bonus, 1.0), 4)
 
-    # Experience fit — peaks at 5–9 years
-    exp_score = 1.0 if 5 <= years <= 9 else max(0.0, 1.0 - abs(years - 7) / 7.0)
-
-    # Semantic keyword match against JD
-    skill_names = " ".join([s.get("name", "").lower() for s in features["skills"]])
-    title       = profile.get("current_title", "").lower()
-    summary     = profile.get("summary", "").lower()
-    combined    = skill_names + " " + title + " " + summary
-    matched     = sum(1 for kw in JD_KEYWORDS if kw in combined)
-    keyword_score = min(1.0, matched / 8.0)
-
-    # Skill quality: avg endorsement duration penalises keyword stuffers
-    if features["skills"]:
-        avg_dur = sum(s.get("duration_months", 0) for s in features["skills"]) / len(features["skills"])
-        skill_quality = min(1.0, avg_dur / 24.0)
-    else:
-        skill_quality = 0.0
-
-    github_score    = (features["github"] / 100.0) if features["github"] >= 0 else 0.0
-    avail_bonus     = 0.05 if features["open_to_work"] else 0.0
-
-    score = (
-        keyword_score               * 0.35 +
-        exp_score                   * 0.20 +
-        features["response_rate"]   * 0.15 +
-        github_score                * 0.10 +
-        skill_quality               * 0.10 +
-        features["profile_complete"]* 0.05 +
-        features["interview_rate"]  * 0.05 +
-        avail_bonus
-    )
-    return round(min(score, 1.0), 4)
-
-# ─────────────────────────────────────────────────────────────
-# Stage 3: Reasoning generation
-# ─────────────────────────────────────────────────────────────
-def build_reasoning(candidate, features):
-    profile  = features["profile"]
-    signals  = features["signals"]
-    skills   = features["skills"]
-    edu_list = candidate.get("education", [])
-    career   = candidate.get("career_history", [])
-    certs    = candidate.get("certifications", [])
-
-    title    = profile.get("current_title", "Unknown")
-    years    = features["years"]
-    company  = profile.get("current_company", "")
-    industry = profile.get("current_industry", "")
-    location = profile.get("location", "")
-    rr       = features["response_rate"]
-    github   = features["github"]
-    ir       = features["interview_rate"]
-    notice   = signals.get("notice_period_days", None)
-    relocate = signals.get("willing_to_relocate", False)
-    mode     = signals.get("preferred_work_mode", "unspecified")
-    salary   = signals.get("expected_salary_range_inr_lpa", {})
-    sal_min  = salary.get("min", None)
-    sal_max  = salary.get("max", None)
-
-    top_skills = sorted(skills, key=lambda x: x.get("endorsements", 0), reverse=True)[:5]
-    skill_str  = ", ".join([f"{s['name']} ({s.get('proficiency','?')})" for s in top_skills]) or "none listed"
-
-    edu_str = ""
-    if edu_list:
-        e = edu_list[0]
-        edu_str = f"{e.get('degree','')} in {e.get('field_of_study','')} from {e.get('institution','')} [{e.get('tier','unknown')} institution]. "
-
-    prev = list({r.get("title","") for r in career if not r.get("is_current", False)})[:2]
-    prev_str = f"Previously: {', '.join(prev)}. " if prev else ""
-
-    cert_str = ""
-    if certs:
-        cert_str = f"Certifications: {', '.join([c.get('name','') for c in certs[:2]])}. "
-
-    beh = f"Response rate {rr*100:.0f}%"
-    if github >= 0:   beh += f"; GitHub {github:.0f}/100"
-    if ir >= 0:       beh += f"; interview completion {ir*100:.0f}%"
-
-    avail = []
-    if features["open_to_work"]: avail.append("open to work")
-    if notice is not None:       avail.append(f"notice {notice}d")
-    if relocate:                 avail.append("willing to relocate")
-    avail.append(f"{mode} preferred")
-    if sal_min and sal_max:      avail.append(f"salary {sal_min}–{sal_max} LPA")
-
+def build_reasoning(candidate, f):
+    p = f["profile"]; s = f["signals"]; skills = f["skills"]
+    edu   = candidate.get("education", [])
+    certs = candidate.get("certifications", [])
+    career= candidate.get("career_history", [])
+    top5  = sorted(skills, key=lambda x: x.get("endorsements", 0), reverse=True)[:5]
+    skill_str = ", ".join([f"{s['name']} ({s.get('proficiency','?')})" for s in top5]) or "none listed"
+    edu_str   = f"{edu[0].get('degree','')} in {edu[0].get('field_of_study','')} from {edu[0].get('institution','')} [{edu[0].get('tier','unknown')} institution]. " if edu else ""
+    prev      = list({r.get("title","") for r in career if not r.get("is_current",False)})[:2]
+    prev_str  = f"Previously: {', '.join(prev)}. " if prev else ""
+    cert_str  = f"Certifications: {', '.join([c.get('name','') for c in certs[:2]])}. " if certs else ""
+    salary    = s.get("expected_salary_range_inr_lpa", {})
+    avail     = []
+    if f["open_to_work"]: avail.append("open to work")
+    notice = s.get("notice_period_days")
+    if notice is not None: avail.append(f"notice {notice}d")
+    if s.get("willing_to_relocate"): avail.append("willing to relocate")
+    avail.append(f"{s.get('preferred_work_mode','?')} preferred")
+    if salary.get("min") and salary.get("max"): avail.append(f"salary {salary['min']}–{salary['max']} LPA")
+    beh = f"Response rate {f['response_rate']*100:.0f}%"
+    if f["github"] >= 0: beh += f"; GitHub {f['github']:.0f}/100"
+    if f["interview_rate"] >= 0: beh += f"; interview completion {f['interview_rate']*100:.0f}%"
     return (
-        f"{title} at {company} ({industry}) in {location}, {years} yrs exp. "
-        f"Top skills: {skill_str}. "
+        f"{p.get('current_title','?')} at {p.get('current_company','')} ({p.get('current_industry','')}) "
+        f"in {p.get('location','')}, {f['years']} yrs exp. Top skills: {skill_str}. "
         f"{edu_str}{prev_str}{cert_str}"
-        f"Profile {features['profile_complete']*100:.0f}% complete, "
-        f"saved by {features['saved_by']} recruiters. "
-        f"Signals — {beh}. "
-        f"{'; '.join(avail).capitalize()}."
+        f"Profile {f['profile_complete']*100:.0f}% complete, saved by {f['saved_by']} recruiters. "
+        f"Signals — {beh}. {'; '.join(avail).capitalize()}."
     ).strip()
 
-# ─────────────────────────────────────────────────────────────
-# Main pipeline
-# ─────────────────────────────────────────────────────────────
-def run_pipeline(uploaded_file):
-    if uploaded_file is None:
-        return None, pd.DataFrame(), "Please upload a JSON or JSONL file."
-
-    try:
-        with open(uploaded_file, "r", encoding="utf-8") as f:
-            raw = f.read().strip()
-    except Exception as e:
-        return None, pd.DataFrame(), f"File read error: {e}"
-
-    # Parse JSON array or JSONL
-    try:
-        if raw.startswith('['):
-            candidates = json.loads(raw)
-        else:
-            candidates = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    except Exception as e:
-        return None, pd.DataFrame(), f"JSON parse error: {e}"
-
+def run_pipeline(candidates):
     if not candidates:
-        return None, pd.DataFrame(), "No candidates found in the uploaded file."
-
-    # Stage 1 + 2: extract features, detect honeypots, score
+        return None, pd.DataFrame(), "No candidates loaded."
     scored = []
     honeypots = 0
     for cand in candidates:
@@ -183,15 +87,10 @@ def run_pipeline(uploaded_file):
         feats = extract_features(cand)
         score = score_candidate(cand, feats)
         scored.append((cand, feats, score))
-
     if not scored:
-        return None, pd.DataFrame(), "All candidates were flagged as honeypots."
-
-    # Stage 3: sort and take top 100
+        return None, pd.DataFrame(), "All candidates flagged as honeypots."
     scored.sort(key=lambda x: x[2], reverse=True)
     top_100 = scored[:100]
-
-    # Stage 4: build reasoning and write CSV
     out_path = "/tmp/submission.csv"
     rows = []
     with open(out_path, "w", newline="", encoding="utf-8") as f:
@@ -201,53 +100,68 @@ def run_pipeline(uploaded_file):
             reasoning = build_reasoning(cand, feats)
             cid = cand["candidate_id"]
             writer.writerow([cid, rank, score, reasoning])
-            rows.append({"candidate_id": cid, "rank": rank, "score": score, "reasoning": reasoning[:80] + "..."})
-
-    df_preview = pd.DataFrame(rows[:10])
+            rows.append({"candidate_id": cid, "rank": rank, "score": score, "reasoning": reasoning[:100] + "..."})
     status = (
-        f"Processed {len(candidates)} candidates. "
-        f"Flagged {honeypots} honeypots. "
-        f"Ranked {len(scored)} valid candidates. "
-        f"Top 100 written to CSV."
+        f"Processed {len(candidates)} candidates — "
+        f"{honeypots} honeypots removed, "
+        f"{len(scored)} valid candidates ranked. "
+        f"Top {min(100, len(top_100))} written to CSV."
     )
-    return out_path, df_preview, status
+    return out_path, pd.DataFrame(rows[:10]), status
+
+def run_preloaded():
+    if not os.path.exists(PRELOADED_SAMPLE):
+        return None, pd.DataFrame(), f"Pre-loaded sample not found at {PRELOADED_SAMPLE}"
+    with open(PRELOADED_SAMPLE, "r", encoding="utf-8") as f:
+        raw = f.read().strip()
+    candidates = json.loads(raw) if raw.startswith('[') else [json.loads(l) for l in raw.splitlines() if l.strip()]
+    return run_pipeline(candidates)
+
+def run_uploaded(uploaded_file):
+    if uploaded_file is None:
+        return None, pd.DataFrame(), "No file uploaded. Use the pre-loaded sample or upload a small JSON/JSONL file."
+    with open(uploaded_file, "r", encoding="utf-8") as f:
+        raw = f.read().strip()
+    try:
+        candidates = json.loads(raw) if raw.startswith('[') else [json.loads(l) for l in raw.splitlines() if l.strip()]
+    except Exception as e:
+        return None, pd.DataFrame(), f"Parse error: {e}"
+    return run_pipeline(candidates)
 
 # ─────────────────────────────────────────────────────────────
 # Gradio UI
 # ─────────────────────────────────────────────────────────────
 with gr.Blocks(title="Redrob Ranker — Bitwise Developers", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# Redrob Candidate Ranking System")
+    gr.Markdown("**Team: Bitwise Developers** | India Runs Data and AI Challenge")
     gr.Markdown(
-        "**Team: Bitwise Developers** | India Runs Data and AI Challenge\n\n"
-        "Upload a candidate JSON or JSONL file. The pipeline will:\n"
-        "1. Filter honeypot candidates\n"
-        "2. Extract features and score each candidate using a multi-signal heuristic ensemble\n"
-        "3. Output the top 100 ranked candidates with detailed reasoning"
+        "### Pipeline\n"
+        "1. Honeypot detection and removal\n"
+        "2. Feature extraction (experience, skills, behavioral signals)\n"
+        "3. Multi-signal heuristic scoring (keyword match, GitHub, response rate, availability)\n"
+        "4. Top 100 selection with detailed reasoning"
     )
 
-    with gr.Row():
-        file_input = gr.File(
-            label="Upload Candidate File (JSON array or JSONL)",
-            file_types=[".json", ".jsonl"]
-        )
+    gr.Markdown("---")
+    gr.Markdown("### Option 1 — Use Pre-loaded Sample (instant, recommended for demo)")
+    sample_btn = gr.Button("Run on Pre-loaded Sample Candidates", variant="primary")
 
-    with gr.Row():
-        run_btn = gr.Button("Run Ranking Pipeline", variant="primary", scale=2)
-
-    with gr.Row():
-        status_box = gr.Textbox(label="Pipeline Status", interactive=False)
-
-    with gr.Row():
-        file_output = gr.File(label="Download submission.csv")
-
-    with gr.Row():
-        df_output = gr.Dataframe(label="Top 10 Preview")
-
-    run_btn.click(
-        fn=run_pipeline,
-        inputs=[file_input],
-        outputs=[file_output, df_output, status_box]
+    gr.Markdown("---")
+    gr.Markdown(
+        "### Option 2 — Upload Your Own File\n"
+        "Upload a small JSON array or JSONL file (recommended: under 5MB / ~500 candidates). "
+        "Do NOT upload the full 100K dataset here — run that locally using `rank.py`."
     )
+    file_input  = gr.File(label="Upload Candidate File (.json or .jsonl)", file_types=[".json", ".jsonl"])
+    upload_btn  = gr.Button("Run on Uploaded File", variant="secondary")
+
+    gr.Markdown("---")
+    status_box  = gr.Textbox(label="Pipeline Status", interactive=False)
+    file_output = gr.File(label="Download submission.csv")
+    df_output   = gr.Dataframe(label="Top 10 Candidates Preview")
+
+    sample_btn.click(fn=run_preloaded, inputs=[], outputs=[file_output, df_output, status_box])
+    upload_btn.click(fn=run_uploaded, inputs=[file_input], outputs=[file_output, df_output, status_box])
 
 if __name__ == "__main__":
     demo.launch()
