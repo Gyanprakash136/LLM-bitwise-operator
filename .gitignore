@@ -1,0 +1,34 @@
+# Environments
+venv/
+.env
+__pycache__/
+*.pyc
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Large Datasets & Outputs
+*.jsonl
+*.csv
+!India_runs_data_and_ai_challenge/sample_submission.csv
+!India_runs_data_and_ai_challenge/gold_ranked_pairs.csv
+!India_runs_data_and_ai_challenge/team_bitwise_developers.csv
+
+# Models, Embeddings & Large Binary Artifacts
+*.gguf
+*.safetensors
+*.bin
+*.npy
+*.pkl
+outputs/
+unsloth_compiled_cache/
+India_runs_data_and_ai_challenge/artifacts/
+India_runs_data_and_ai_challenge/finetuned_ranker/
+
+# IDEs
+.idea/
+.vscode/

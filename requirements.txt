@@ -1,0 +1,11 @@
+numpy
+sentence-transformers
+faiss-cpu
+llama-cpp-python
+unsloth
+trl
+datasets
+transformers
+
+gradio
+pandas
