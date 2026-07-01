@@ -81,12 +81,17 @@ def main(candidates_path="India_runs_data_and_ai_challenge/candidates.jsonl", ou
     open_func = gzip.open if candidates_path.endswith('.gz') else open
     
     print("Processing candidates...")
+    open_func = gzip.open if candidates_path.endswith('.gz') else open
     with open_func(candidates_path, 'rt') as f:
-        for line in f:
-            if not line.strip():
-                continue
-            candidate = json.loads(line)
-            
+        raw = f.read().strip()
+    
+    # Support both JSON array and JSONL formats
+    if raw.startswith('['):
+        candidates_iter = json.loads(raw)
+    else:
+        candidates_iter = [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+    for candidate in candidates_iter:
             # Hard filter: drop honeypots
             if is_honeypot(candidate):
                 continue
@@ -100,10 +105,12 @@ def main(candidates_path="India_runs_data_and_ai_challenge/candidates.jsonl", ou
             
             if len(features_list) % 10000 == 0:
                 print(f"Processed {len(features_list)} valid candidates...")
-                # FOR TESTING ONLY: break early if we are just verifying
-                # break 
                 
     print(f"Total candidates after filtering: {len(features_list)}")
+    
+    if len(features_list) == 0:
+        print("No valid candidates found. Exiting.")
+        return
     
     # Save features
     with open(os.path.join(out_dir, "candidate_features.pkl"), "wb") as f:

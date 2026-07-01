@@ -22,20 +22,23 @@ except ImportError:
 def get_candidate_details(candidates_file, target_ids):
     import gzip
     open_func = gzip.open if candidates_file.endswith('.gz') else open
-    
+    with open_func(candidates_file, 'rt') as f:
+        raw = f.read().strip()
+
+    # Support both JSON array and JSONL formats
+    if raw.startswith('['):
+        candidates_iter = iter(json.loads(raw))
+    else:
+        candidates_iter = (json.loads(line) for line in raw.splitlines() if line.strip())
+
     found = {}
     target_set = set(target_ids)
-    
-    with open_func(candidates_file, 'rt') as f:
-        for line in f:
-            if not line.strip():
-                continue
-            cand = json.loads(line)
-            cid = cand["candidate_id"]
-            if cid in target_set:
-                found[cid] = cand
-                if len(found) == len(target_set):
-                    break
+    for cand in candidates_iter:
+        cid = cand["candidate_id"]
+        if cid in target_set:
+            found[cid] = cand
+            if len(found) == len(target_set):
+                break
     return found
 
 def main(candidates_path, output_csv, artifacts_dir="India_runs_data_and_ai_challenge/artifacts"):
