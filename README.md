@@ -17,24 +17,7 @@ The solution is a four-stage hybrid ranking pipeline that combines deterministic
 
 ## System Architecture
 
-```mermaid
-graph TD
-    A[candidates.jsonl] --> B{Stage 1\nHoneypot Detector}
-    B -- Flagged / Discarded --> Z[Dropped]
-    B -- Clean --> C[Stage 2\nFeature Extraction]
-
-    C --> D[Text Vectorization\nBAAI/bge-small-en-v1.5]
-    C --> E[Heuristic Feature Store\nexperience, skills, signals]
-    D --> F[(FAISS Index\nIndexFlatIP / cosine)]
-
-    G[job_description.txt] --> H[JD Vectorization]
-    H --> F
-
-    F -- ANN Top 2000 --> I[Stage 3\nHeuristic Ensemble Scorer]
-    E --> I
-    I -- Top 200 --> J[Stage 4\nQLoRA LLM Re-ranker\nQwen2.5-3B-Instruct Q4_K_M]
-    J --> K[Final Top 100\nsubmission CSV]
-```
+![System Architecture](Arch_Diagram_INDIARUNS.png)
 
 ---
 
@@ -299,5 +282,5 @@ Open [huggingface.co/spaces/gyan0009/redrob-ranker-bitwise-operator](https://hug
 
 | Member | Role | Contact |
 |---|---|---|
-| Koustubh Verma | Team Lead, Backend Engineer | 2330444@kiit.ac.in |
+| Koustubh Verma | Team Lead, Backend Engineer | hp.koustubh@gmail.com |
 | Gyan Prakash | ML Engineer | gyan.official.work0902@gmail.com |
